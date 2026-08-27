@@ -184,6 +184,24 @@ function Get-ProfileTargets {
                 })
             }
         }
+
+        # MSI installs register InstallLocation here and may live outside
+        # Program Files (custom install directory).
+        foreach ($hive in @(
+            'HKLM:\SOFTWARE\Microsoft\PowerShellCore\InstalledVersions',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\PowerShellCore\InstalledVersions'
+        )) {
+            foreach ($key in @(Get-ChildItem -Path $hive -ErrorAction SilentlyContinue)) {
+                $location = (Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue).InstallLocation
+                if (-not $location) { continue }
+                $location = $location.TrimEnd('\')
+                if (-not (Test-Path -LiteralPath (Join-Path $location 'pwsh.exe'))) { continue }
+                $targets.Add([pscustomobject]@{
+                    Host = "PowerShell (registry: $location)"
+                    Path = Join-Path $location 'profile.ps1'
+                })
+            }
+        }
     }
     else {
         # GetFolderPath resolves OneDrive Known Folder Move; $HOME\Documents does not.
@@ -200,7 +218,15 @@ function Get-ProfileTargets {
         })
     }
 
-    $targets
+    # Program Files scan and registry entries usually overlap; keep the first.
+    $seen = @{}
+    foreach ($target in $targets) {
+        $key = $target.Path.TrimEnd('\').ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $target
+        }
+    }
 }
 
 function Set-SharedDirectoryAcl {
@@ -452,13 +478,13 @@ if ($psrl) {
     $indent = if ($script:PSPromptAscii) { '  . ' } else { '  ' + [char]0x2219 + ' ' }
     try { Set-PSReadLineOption -ContinuationPrompt $indent } catch { }
 
-    if ($script:PSPromptAnsi -and $psrl.Parameters.ContainsKey('PromptText')) {
-        try {
-            Set-PSReadLineOption -PromptText @(
-                (script:Write-PSPromptColor -Text "$($script:PSPromptGlyph.Sigil) " -Color '114'),
-                (script:Write-PSPromptColor -Text "$($script:PSPromptGlyph.Sigil) " -Color '203')
-            )
-        } catch { }
+    # Deliberately disable PSReadLine's parse-error prompt repaint. It rewrites
+    # the prompt's trailing cells with its own width math, which disagrees with
+    # the terminal for ambiguous-width glyphs like the sigil and paints the red
+    # sigil one cell off, corrupting the input position. The prompt already
+    # colors the sigil by the last command's result.
+    if ($psrl.Parameters.ContainsKey('PromptText')) {
+        try { Set-PSReadLineOption -PromptText '' } catch { }
     }
 }
 '@
@@ -568,6 +594,18 @@ if (-not $AsciiOnly -and -not $ForceUtf8Console -and
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Warning 'git was not found on PATH. The git segment stays hidden until it is.'
+}
+
+if ($Scope -eq 'AllUsers') {
+    # A Store/MSIX or portable pwsh keeps $PSHOME read-only, so no machine-wide
+    # profile can ever reach it; surface that instead of failing silently.
+    $targetDirs = @($targets | ForEach-Object { (Split-Path -Parent $_.Path).TrimEnd('\') })
+    foreach ($pwshCmd in @(Get-Command pwsh -All -CommandType Application -ErrorAction SilentlyContinue)) {
+        $pwshDir = (Split-Path -Parent $pwshCmd.Source).TrimEnd('\')
+        if ($targetDirs -notcontains $pwshDir) {
+            Write-Warning ("pwsh at '{0}' has no AllUsers profile target (Store/MSIX and portable installs cannot take machine-wide profiles). Run -Scope CurrentUser on this machine to cover it." -f $pwshCmd.Source)
+        }
+    }
 }
 
 Write-Host "Installed ($Scope). Open a new shell to confirm."
