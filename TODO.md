@@ -31,6 +31,17 @@
   **Test:** kör mot subnätet upprepat — .12/.20 ska konsekvent få `ICMP` i
   Method även med rimlig hastighet, inte bara vid `-Throttle 1`.
 
+- [ ] **Läs om grann-cachen med kort fördröjning (fånga MAC som ännu var Incomplete)**
+
+  **Problem:** MAC läses ur OS:ets grann-cache direkt efter svepet (rad ~493). En
+  värd vars ARP-uppslag ännu är `Incomplete` vid avläsningen filtreras bort (rad
+  ~217) och får ingen MAC, trots att den lever. Timing-race, inte samma sak som
+  ICMP-samtidigheten.
+
+  **Förslag:** ny parameter `-NeighborSettleMs` (default ~300). Efter första
+  `Get-NeighborCache`, sov kort och läs om + merga in poster som hunnit resolva.
+  Återanvänd samma merge-logik som redan finns efter TCP-scanet (rad ~514-518).
+
 - [ ] **Visa resultatet som en tabell i slutet**
 
   **Nuläge:** scriptet skickar `[pscustomobject]` med 7 egenskaper till
