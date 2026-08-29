@@ -2,6 +2,24 @@
 
 ## Att göra
 
+- [ ] **ICMP-svepet: flera försök per värd (minska falska "ARP-only")**
+
+  **Problem:** `Invoke-PingSweep` skickar exakt ETT eko per värd (rad ~328). En
+  värd som tappar det paketet (t.ex. Wi-Fi-enhet i strömsparläge, randomiserad
+  MAC) registreras som ICMP-miss och syns bara via ARP, trots att den lever och
+  besvarar `ping.exe` (som default skickar 4 paket). Bekräftat i test:
+  192.168.99.12 pendlar mellan `ARP` och `ICMP+ARP` mellan körningar.
+
+  **Förslag:** ny parameter `-IcmpRetries` (alias `-Count`, default 2). För varje
+  värd, försök upp till N gånger och räkna som `ICMP` vid första lyckade svaret;
+  spara första lyckade RTT. Behåll batch/throttle-strukturen — enklast att göra
+  om-försöken bara för adresser som ännu inte svarat efter batchens första varv,
+  så att kostnaden stannar på faktiskt tysta/tappande värdar och inte fördubblar
+  svepet för alla. `-Slow` kan sätta ett något högre default (t.ex. 3).
+
+  **Test:** kör mot subnät med en känd Wi-Fi-enhet upprepade gånger — den ska nu
+  konsekvent få `ICMP` i Method i stället för att pendla.
+
 - [ ] **Visa resultatet som en tabell i slutet**
 
   **Nuläge:** scriptet skickar `[pscustomobject]` med 7 egenskaper till
