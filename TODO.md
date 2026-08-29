@@ -2,23 +2,34 @@
 
 ## Att göra
 
-- [ ] **ICMP-svepet: flera försök per värd (minska falska "ARP-only")**
+- [ ] **ICMP-svepet tappar levande värdar vid hög samtidighet (falska "ARP-only")**
 
-  **Problem:** `Invoke-PingSweep` skickar exakt ETT eko per värd (rad ~328). En
-  värd som tappar det paketet (t.ex. Wi-Fi-enhet i strömsparläge, randomiserad
-  MAC) registreras som ICMP-miss och syns bara via ARP, trots att den lever och
-  besvarar `ping.exe` (som default skickar 4 paket). Bekräftat i test:
-  192.168.99.12 pendlar mellan `ARP` och `ICMP+ARP` mellan körningar.
+  **Grundorsak (uppmätt):** `System.Net.NetworkInformation.Ping` är opålitlig
+  när många asynkrona pings går parallellt mot olika adresser — svar från
+  levande värdar tappas. Med scriptets default `-Throttle 32` missas ~50–75 % av
+  ICMP-svaren; värdarna syns då bara via ARP. Mätning mot .1–.60:
 
-  **Förslag:** ny parameter `-IcmpRetries` (alias `-Count`, default 2). För varje
-  värd, försök upp till N gånger och räkna som `ICMP` vid första lyckade svaret;
-  spara första lyckade RTT. Behåll batch/throttle-strukturen — enklast att göra
-  om-försöken bara för adresser som ännu inte svarat efter batchens första varv,
-  så att kostnaden stannar på faktiskt tysta/tappande värdar och inte fördubblar
-  svepet för alla. `-Slow` kan sätta ett något högre default (t.ex. 3).
+  | Throttle | ICMP-träff (av 4 körn.) |
+  |----------|-------------------------|
+  | 1        | 4/4                     |
+  | 8        | 2/4                     |
+  | 16       | 1/4                     |
+  | 32       | 1–2/4                   |
 
-  **Test:** kör mot subnät med en känd Wi-Fi-enhet upprepade gånger — den ska nu
-  konsekvent få `ICMP` i Method i stället för att pendla.
+  192.168.99.12 och .20 svarade 30/30 på sekventiella pings men fick `ARP` i 7/8
+  scriptkörningar med default throttle; med `-Throttle 4` gav de `ICMP+ARP` i
+  3/3. Det är alltså inte strömsparläge på enheterna utan svepets parallellitet.
+
+  **Förslag (två delar):**
+  1. **Separat, lägre default-throttle för ICMP-svepet** (t.ex. 8), oberoende av
+     `-Throttle` som styr TCP-scanet. Alternativt sänk gemensamma defaulten och
+     dokumentera avvägningen tid vs. tillförlitlighet.
+  2. **Retries per värd:** ny parameter `-IcmpRetries` (alias `-Count`, default
+     2). Gör bara om-försök för adresser som ännu inte svarat, så kostnaden
+     stannar på tysta värdar. Räkna som `ICMP` vid första lyckade svaret.
+
+  **Test:** kör mot subnätet upprepat — .12/.20 ska konsekvent få `ICMP` i
+  Method även med rimlig hastighet, inte bara vid `-Throttle 1`.
 
 - [ ] **Visa resultatet som en tabell i slutet**
 
