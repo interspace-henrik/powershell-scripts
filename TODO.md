@@ -2,66 +2,29 @@
 
 ## Att göra
 
-- [ ] **NetScan: robustare OUI-nedladdning (418 från WAF) + tydlig offline-väg**
-
-  **Symtom:** på en maskin (DESKTOP-0D3FBQ0) ger `Invoke-WebRequest` mot
-  `https://standards-oui.ieee.org/oui/oui.csv` HTTP **418** ("I'm a teapot"),
-  medan webbläsaren hämtar filen fint. 418 kommer från en Cloudflare-liknande WAF
-  som utmanar/blockar icke-webbläsar-klienter (User-Agent eller egress-IP).
-  Kunde *inte* reproduceras från denna maskin (200 OK med både default- och
-  browser-UA), så det är miljöspecifikt — men förbättringar går att göra:
-
-  1. **Sätt en webbläsar-User-Agent** (och `Accept: text/csv,*/*`) på nedladdningen.
-     Löser de WAF:ar som blockar enbart på UA. Billigt, gör alltid.
-  2. **Tydlig offline-väg i felmeddelandet.** Scriptet cachar redan filen och
-     laddar bara ner när den saknas (`-OuiPath`, default
-     `%LOCALAPPDATA%\NetScan\oui.csv`). Låt varningen skriva ut *exakt* sökväg och
-     säga: "ladda ner oui.csv i webbläsaren och lägg den här, eller ange -OuiPath".
-     Det är den garanterade lösningen när WAF:en inte släpper igenom scriptet.
-  3. **Ev. retry/alternativ spegel** (t.ex. maclookup/wireshark-manuf) som fallback.
-
-  **Test:** svårt att verifiera 418-fixen härifrån (går ej att reproducera);
-  verifiera minst att UA sätts och att offline-vägen (förnedladdad fil på
-  cache-sökvägen) används utan nätåtkomst.
-
-- [ ] **NetScan: skanna on-link-nät över lokala kortet (inte tunneln) via källbunden SendARP**
-
-  **Bakgrund:** när ett subnät ligger på ett lokalt nätverkskort *men* en
-  lägre-metric-route (Tailscale) annonserar samma nät, routar Windows scan-trafik
-  genom tunneln. `.NET Ping` och `SendARP` (utan källa) följer routningstabellen
-  och hamnar fel → MAC saknas och ICMP blir ojämnt. Din poäng stämmer: ligger
-  nätet på ett kort *ska* det skannas lokalt.
-
-  **Lösning (verifierad):** `SendARP` **med explicit källadress** (kortets IP) gör
-  ARP direkt på det fysiska interfacet, oberoende av routningen. Uppmätt mot
-  `.99.0/24` med källa `192.168.99.70`:
-  - `.118` → `5A:7A:9B:CE:C4:42` (riktig MAC, som annars saknades)
-  - `.31`  → `BC:24:11:B5:D0:FE`
-  - `.201` (död) → `rc=67` (korrekt: ingen ARP)
-
-  Ett anrop ger alltså både liveness och MAC, över L2, utan admin.
-
-  **Design:**
-  1. Hjälpfunktion som hittar det on-link-interface + käll-IP som äger målsubnätet
-     (återanvänd logiken i `Get-OffLinkRouteWarning`/`Test-LocalSubnet`, men
-     returnera käll-IP:t). Ny `-SourceAddress` för att övervrida.
-  2. P/Invoke `SendARP` (`iphlpapi.dll`). Ny `Invoke-ArpSweep` som kör SendARP
-     källbundet mot varje target och returnerar address→MAC. OBS: SendARP är
-     synkron och tar ~1–3 s per *död* värd (ARP-retries), så parallellisera med en
-     runspace-pool (t.ex. 16–32 trådar), inte sekventiellt.
-  3. **Är målnätet on-link:** använd ARP-svepet som primär upptäckt (liveness+MAC
-     över L2), i stället för att lita på ICMP-genom-tunneln. ICMP kan köras
-     best-effort för RTT.
-  4. **Är målnätet inte on-link:** som idag (ICMP/TCP), och **behåll varningen** —
-     den är rätt just för genuint routade nät (VPN/router). Alltså: varna bara när
-     subnätet *inte* finns på något lokalt kort; on-link-fallet löses av ARP-svepet
-     i stället för en varning.
-
-  **Test:** mot `.99.0/24` med Tailscale-routen aktiv ska `.118` m.fl. nu få MAC
-  och stabil upptäckt utan att man rör Tailscale; ett äkta fjärrnät ska fortfarande
-  ge varningen.
-
 ## Klart
+
+- [x] **NetScan: robustare OUI-nedladdning (418 från WAF) + tydlig offline-väg** _(2026-08-29)_
+
+  `Get-OuiTable` sätter nu en webbläsar-User-Agent + `Accept: text/csv,*/*` på
+  nedladdningen (klarar WAF:ar som blockar enbart på UA). Felmeddelandet skriver ut
+  exakt cache-sökväg och instruerar att ladda ner `oui.csv` i webbläsaren och lägga
+  den där (eller ange `-OuiPath`) — den garanterade offline-vägen. 418:an gick inte
+  att reproducera härifrån (200 OK), så UA-fixen är best-effort; offline-vägen är
+  den säkra. (Alternativ spegel hoppades över tills det behövs.)
+
+- [x] **NetScan: skanna on-link-nät över lokala kortet (inte tunneln) via källbunden SendARP** _(2026-08-29)_
+
+  P/Invoke `NetScanArp.SendARP` (Windows-skyddad, laddas en gång). Ny
+  `Get-OnLinkSource` (käll-IP för målsubnätet) och `Invoke-ArpSweep` (källbunden
+  SendARP på en runspace-pool, address→MAC). När målnätet är on-link körs ARP-svepet
+  och skriver MAC:ar direkt över L2 — kringgår en ev. tunnel-route. Nya
+  `-SourceAddress` (övervrida käll-IP) och `-SkipArpSweep` (fart). Varningen behålls
+  bara för genuint routade fjärrnät; on-link-fallet löses nu i stället för att varna
+  (det ersätter förra punktens tunnel-varning, `Get-OffLinkRouteWarning` togs bort).
+  Verifierat mot `.99.0/24` med Tailscale-routen aktiv: **9/9 värdar fick MAC**,
+  `.118` (som saknade MAC) hittas nu via ARP. Fixade även en latent bugg där
+  noll-träff kraschade på `$sorted.Count` under strict mode.
 
 - [x] **PSPrompt: tomrad före prompten + slimmad admin-indikator** _(2026-08-29)_
 

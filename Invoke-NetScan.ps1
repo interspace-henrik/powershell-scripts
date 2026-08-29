@@ -13,8 +13,12 @@
       1. ICMP sweep (parallel, throttled)
       2. Read the ARP/neighbor cache afterwards - a host that blocks ICMP but is
          L2-adjacent still shows up here, because the ping forced an ARP request.
-      3. Optional TCP connect scan (-Port / -PortSet).
-      4. Reverse DNS + vendor lookup for everything found.
+      3. On-link subnets: a source-bound ARP sweep (SendARP) resolves each host's
+         MAC directly over L2, so hosts stay discoverable with their MAC even when
+         a lower-metric tunnel route (e.g. Tailscale) would send the ICMP astray.
+         See -SourceAddress / -SkipArpSweep.
+      4. Optional TCP connect scan (-Port / -PortSet).
+      5. Reverse DNS + vendor lookup for everything found.
 
 .PARAMETER Slow
     Rate-limits the scan so it does not look like a burst sweep to IDS/autoblock
@@ -94,6 +98,17 @@ param(
     # Randomize probe order - sequential sweeps are easier for an IDS to fingerprint.
     [switch]$Shuffle,
 
+    # Local source IP to bind ARP resolution to. Auto-detected from the target
+    # subnet when omitted. Forces the ARP request out the physical interface even
+    # when a lower-metric route (e.g. a Tailscale/VPN subnet router advertising the
+    # same prefix) would otherwise capture the traffic and hide the MAC.
+    [ipaddress]$SourceAddress,
+
+    # Skip the source-bound ARP sweep that resolves MACs directly over L2 for
+    # on-link subnets. The sweep adds time on large ranges (a silent host costs the
+    # full ARP retry), so this trades MAC coverage for speed.
+    [switch]$SkipArpSweep,
+
     # TCP ports to test. Combined with any ports from -PortSet.
     [Alias('TcpPort')]
     [int[]]$Port,
@@ -130,6 +145,25 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# SendARP (iphlpapi) resolves an IP to a MAC with a real ARP request on the local
+# link. Bound to a source IP it leaves the physical interface regardless of the
+# routing table, which is how on-link hosts stay discoverable (with their MAC)
+# when a lower-metric tunnel route would otherwise capture the traffic.
+$script:CanArp = ($env:OS -eq 'Windows_NT')
+if ($script:CanArp -and -not ('NetScanArp' -as [type])) {
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NetScanArp {
+    [DllImport("iphlpapi.dll", ExactSpelling = true)]
+    public static extern int SendARP(uint DestIP, uint SrcIP, byte[] pMacAddr, ref int PhyAddrLen);
+}
+'@
+    }
+    catch { $script:CanArp = $false }
+}
 
 # --- Preset ------------------------------------------------------------------
 
@@ -330,11 +364,19 @@ function Get-OuiTable {
         Write-Verbose "Downloading IEEE OUI database to $Path"
         try {
             $progressPreference = 'SilentlyContinue'
+            # A browser-like User-Agent gets past WAFs that answer non-browser
+            # clients with a challenge (the IEEE site returns HTTP 418 to some).
+            $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             Invoke-WebRequest -Uri 'https://standards-oui.ieee.org/oui/oui.csv' `
-                              -OutFile $Path -UseBasicParsing -TimeoutSec 60
+                              -OutFile $Path -UseBasicParsing -TimeoutSec 60 `
+                              -UserAgent $ua -Headers @{ Accept = 'text/csv,text/plain,*/*' }
         }
         catch {
-            Write-Warning "OUI database could not be downloaded: $($_.Exception.Message). Vendor lookup disabled."
+            Write-Warning ("OUI database could not be downloaded: $($_.Exception.Message) " +
+                "Vendor lookup disabled. If a firewall/WAF is blocking the download (e.g. HTTP 418), " +
+                "open https://standards-oui.ieee.org/oui/oui.csv in a browser, save it to '$Path', " +
+                "and re-run (or pass -OuiPath to point at it).")
             return $null
         }
     }
@@ -553,54 +595,93 @@ function Test-LocalSubnet {
     return $false
 }
 
-function Get-OffLinkRouteWarning {
+function Get-OnLinkSource {
     <#
-        The target subnet may be directly connected yet still be reached through
-        a different interface, when a lower-metric route (typically a Tailscale or
-        VPN subnet router advertising the same prefix) wins route selection. Scan
-        traffic then leaves through that interface instead of the local L2, so no
-        ARP happens: MAC/vendor data is missing and host detection turns erratic.
-        Returns a warning string when that is the case, otherwise $null.
+        Returns the local IPv4 address whose own subnet contains $SampleAddress -
+        the source IP to bind ARP to for that target. $null when the target is not
+        on any directly connected interface (genuinely routed via a gateway/VPN),
+        or when the required cmdlet is unavailable.
     #>
     param([string]$SampleAddress)
 
-    if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue) -or
-        -not (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) -or
-        -not (Get-Command Get-NetIPInterface -ErrorAction SilentlyContinue)) { return $null }
+    if (-not (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue)) { return $null }
 
-    # The on-link interface that owns the target subnet, if any.
-    $target   = ConvertTo-UInt32Address ([ipaddress]$SampleAddress)
-    $onLinkIf = $null
+    $target = ConvertTo-UInt32Address ([ipaddress]$SampleAddress)
     foreach ($local in Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue) {
         if ($local.PrefixLength -eq 0 -or $local.PrefixLength -gt 32) { continue }
         $mask = [uint32](( 0xFFFFFFFFL -shl (32 - $local.PrefixLength)) -band 0xFFFFFFFFL)
         if (((ConvertTo-UInt32Address ([ipaddress]$local.IPAddress)) -band $mask) -eq ($target -band $mask)) {
-            $onLinkIf = $local.InterfaceIndex
-            break
+            return $local.IPAddress
         }
     }
-    if ($null -eq $onLinkIf) { return $null }   # not directly connected; handled by Test-LocalSubnet
+    return $null
+}
 
-    # The route Windows will actually use to reach the target.
-    try {
-        $route = Find-NetRoute -RemoteIPAddress $SampleAddress -ErrorAction Stop |
-                 Where-Object { $_.PSObject.Properties['DestinationPrefix'] } |
-                 Select-Object -First 1
+function Invoke-ArpSweep {
+    <#
+        Resolves each target's MAC with SendARP, source-bound to $SourceAddress so
+        the ARP request leaves the physical interface regardless of the routing
+        table (a lower-metric tunnel route would otherwise capture it, and no ARP -
+        hence no MAC - would ever happen). Returns a hashtable of address ->
+        normalized MAC for hosts that answered ARP; that answer also proves the
+        host is alive on L2.
+
+        SendARP is synchronous and a silent host costs the full ARP retry time, so
+        the calls run on a runspace pool. The P/Invoke type is loaded into the
+        process AppDomain, so pool runspaces resolve [NetScanArp] without re-adding.
+    #>
+    param([string[]]$Addresses, [string]$SourceAddress, [int]$Throttle = 32)
+
+    $srcUint = [System.BitConverter]::ToUInt32(([ipaddress]$SourceAddress).GetAddressBytes(), 0)
+
+    $worker = {
+        param($Ip, $SrcUint)
+        $mac = New-Object byte[] 6
+        $len = 6
+        $destUint = [System.BitConverter]::ToUInt32(([ipaddress]$Ip).GetAddressBytes(), 0)
+        $rc = [NetScanArp]::SendARP($destUint, $SrcUint, $mac, [ref]$len)
+        if ($rc -eq 0 -and $len -ge 6) {
+            $hex = ($mac[0..5] | ForEach-Object { $_.ToString('X2') }) -join ':'
+            if ($hex -ne '00:00:00:00:00:00' -and $hex -ne 'FF:FF:FF:FF:FF:FF') {
+                [pscustomobject]@{ Address = $Ip; Mac = $hex }
+            }
+        }
     }
-    catch { return $null }
-    if (-not $route -or $route.InterfaceIndex -eq $onLinkIf) { return $null }   # on-link path wins - all good
 
-    $selIf = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    $onIf  = Get-NetIPInterface -InterfaceIndex $onLinkIf              -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    $selName = if ($selIf) { $selIf.InterfaceAlias } else { "ifIndex $($route.InterfaceIndex)" }
-    $onName  = if ($onIf)  { $onIf.InterfaceAlias }  else { "ifIndex $onLinkIf" }
-    $selMetric = if ($selIf) { " (metric $($selIf.InterfaceMetric))" } else { '' }
-    $onMetric  = if ($onIf)  { " (metric $($onIf.InterfaceMetric))" }  else { '' }
+    $pool = [runspacefactory]::CreateRunspacePool(1, [Math]::Max(1, $Throttle))
+    $pool.Open()
+    $jobs = New-Object System.Collections.ArrayList
+    try {
+        foreach ($ip in $Addresses) {
+            $ps = [powershell]::Create()
+            $ps.RunspacePool = $pool
+            [void]$ps.AddScript($worker).AddArgument($ip).AddArgument($srcUint)
+            [void]$jobs.Add([pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke() })
+        }
 
-    return "Target subnet is routed via '$selName'$selMetric instead of your on-link '$onName'$onMetric. " +
-           'Scan traffic leaves through that interface, so MAC/vendor data will be missing and host ' +
-           "detection may be erratic. To scan the physical LAN, lower the '$onName' metric or disable the " +
-           "overriding route (e.g. 'tailscale set --accept-routes=false')."
+        $map = @{}
+        $done = 0
+        foreach ($job in $jobs) {
+            try {
+                foreach ($r in $job.PS.EndInvoke($job.Handle)) {
+                    if ($r) { $map[$r.Address] = $r.Mac }
+                }
+            }
+            catch { }
+            finally { $job.PS.Dispose() }
+
+            $done++
+            Write-Progress -Activity 'ARP sweep' `
+                           -Status "$done/$($jobs.Count) - $($map.Count) with MAC" `
+                           -PercentComplete ([int](100 * $done / [Math]::Max(1, $jobs.Count)))
+        }
+    }
+    finally {
+        $pool.Close(); $pool.Dispose()
+        Write-Progress -Activity 'ARP sweep' -Completed
+    }
+
+    return $map
 }
 
 # --- Main --------------------------------------------------------------------
@@ -621,12 +702,12 @@ else {
 
     if (-not $targets) { throw 'The specified range contains no host addresses.' }
 
-    if (-not (Test-LocalSubnet -SampleAddress $targets[0])) {
+    # Source IP for L2/ARP: an explicit override, else the local interface that
+    # owns the target subnet. $null means the target is not on any local interface.
+    $arpSource = if ($SourceAddress) { $SourceAddress.IPAddressToString } else { Get-OnLinkSource -SampleAddress $targets[0] }
+
+    if (-not $arpSource -and -not (Test-LocalSubnet -SampleAddress $targets[0])) {
         Write-Warning 'Target range is not on a directly connected interface - MAC addresses and vendor data will be unavailable (ARP is link-local).'
-    }
-    else {
-        $routeWarning = Get-OffLinkRouteWarning -SampleAddress $targets[0]
-        if ($routeWarning) { Write-Warning $routeWarning }
     }
 
     $probeOrder = if ($Shuffle) { $targets | Sort-Object { Get-Random } } else { $targets }
@@ -643,6 +724,21 @@ else {
     if ($NeighborSettleMs -gt 0) {
         Start-Sleep -Milliseconds $NeighborSettleMs
         Merge-NeighborCache -Into $neighbors
+    }
+
+    # On-link: resolve MACs directly over L2 with source-bound ARP. This forces
+    # the request out the physical interface, bypassing any lower-metric tunnel
+    # route (e.g. a Tailscale/VPN subnet router) that would otherwise capture the
+    # traffic - so on-link hosts stay discoverable and keep their MAC even when the
+    # ICMP echo went through the tunnel. The ARP answer itself proves liveness.
+    if ($script:CanArp -and $arpSource -and -not $SkipArpSweep) {
+        Write-Verbose "ARP sweep source-bound to $arpSource ($($targets.Count) targets)."
+        try {
+            $arpMap = Invoke-ArpSweep -Addresses $targets -SourceAddress $arpSource -Throttle $Throttle
+            foreach ($entry in $arpMap.GetEnumerator()) { $neighbors[$entry.Key] = $entry.Value }
+            Write-Verbose "ARP sweep resolved $($arpMap.Count) MACs."
+        }
+        catch { Write-Warning "ARP sweep failed: $($_.Exception.Message)" }
     }
 }
 
@@ -706,7 +802,9 @@ foreach ($address in $discovered) {
     })
 }
 
-$sorted = $results | Sort-Object { ConvertTo-UInt32Address ([ipaddress]$_.IPAddress) }
+# @() so an empty scan yields a real (count 0) array, not $null - otherwise
+# $sorted.Count below throws under Set-StrictMode.
+$sorted = @($results | Sort-Object { ConvertTo-UInt32Address ([ipaddress]$_.IPAddress) })
 
 # Register the table view so the result prints as a table. Update-FormatData
 # needs a file on disk; keep it beside the OUI cache. Failure here only costs
