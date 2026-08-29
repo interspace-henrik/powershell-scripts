@@ -2,70 +2,29 @@
 
 ## Att göra
 
-- [ ] **ICMP-svepet tappar levande värdar vid hög samtidighet (falska "ARP-only")**
-
-  **Grundorsak (uppmätt):** `System.Net.NetworkInformation.Ping` är opålitlig
-  när många asynkrona pings går parallellt mot olika adresser — svar från
-  levande värdar tappas. Med scriptets default `-Throttle 32` missas ~50–75 % av
-  ICMP-svaren; värdarna syns då bara via ARP. Mätning mot .1–.60:
-
-  | Throttle | ICMP-träff (av 4 körn.) |
-  |----------|-------------------------|
-  | 1        | 4/4                     |
-  | 8        | 2/4                     |
-  | 16       | 1/4                     |
-  | 32       | 1–2/4                   |
-
-  192.168.99.12 och .20 svarade 30/30 på sekventiella pings men fick `ARP` i 7/8
-  scriptkörningar med default throttle; med `-Throttle 4` gav de `ICMP+ARP` i
-  3/3. Det är alltså inte strömsparläge på enheterna utan svepets parallellitet.
-
-  **Förslag (två delar):**
-  1. **Separat, lägre default-throttle för ICMP-svepet** (t.ex. 8), oberoende av
-     `-Throttle` som styr TCP-scanet. Alternativt sänk gemensamma defaulten och
-     dokumentera avvägningen tid vs. tillförlitlighet.
-  2. **Retries per värd:** ny parameter `-IcmpRetries` (alias `-Count`, default
-     2). Gör bara om-försök för adresser som ännu inte svarat, så kostnaden
-     stannar på tysta värdar. Räkna som `ICMP` vid första lyckade svaret.
-
-  **Test:** kör mot subnätet upprepat — .12/.20 ska konsekvent få `ICMP` i
-  Method även med rimlig hastighet, inte bara vid `-Throttle 1`.
-
-- [ ] **Läs om grann-cachen med kort fördröjning (fånga MAC som ännu var Incomplete)**
-
-  **Problem:** MAC läses ur OS:ets grann-cache direkt efter svepet (rad ~493). En
-  värd vars ARP-uppslag ännu är `Incomplete` vid avläsningen filtreras bort (rad
-  ~217) och får ingen MAC, trots att den lever. Timing-race, inte samma sak som
-  ICMP-samtidigheten.
-
-  **Förslag:** ny parameter `-NeighborSettleMs` (default ~300). Efter första
-  `Get-NeighborCache`, sov kort och läs om + merga in poster som hunnit resolva.
-  Återanvänd samma merge-logik som redan finns efter TCP-scanet (rad ~514-518).
-
-- [ ] **Visa resultatet som en tabell i slutet**
-
-  **Nuläge:** scriptet skickar `[pscustomobject]` med 7 egenskaper till
-  pipelinen (rad ~548 + `$sorted` rad ~567). Eftersom objekten har fler än 4
-  egenskaper renderar PowerShell dem som lista (`Format-List`), inte tabell.
-
-  **Förslag (behåller pipeline-kontraktet):** ge utdataobjekten ett eget
-  typnamn, t.ex. `NetScan.Host` (via `PSTypeName` i `[pscustomobject]`), och
-  registrera en standard-tabellvy med `Update-FormatData` /
-  `Get-FormatData`-stil så att de *visas* som tabell men fortfarande är riktiga
-  objekt (så `-CsvPath` och vidare pipelinehantering fungerar oförändrat).
-  Kolumner: `IPAddress`, `MACAddress`, `HostName`, `Vendor`, `OpenPorts`,
-  `Method`, `ResponseTimeMs`. Definiera kolumnbredder så att långa `HostName`/
-  `Vendor` inte spränger bredden.
-
-  **Enklare alternativ:** avsluta med `$sorted | Format-Table -AutoSize`. Nackdel:
-  bryter "objects go to the pipeline" — `$x = .\Invoke-NetScan.ps1` fångar då
-  formatobjekt, inte data. Går att mildra med en `-AsTable`-switch som bara då
-  kör `Format-Table`.
-
-  **Rekommendation:** typnamn + formatvy (första förslaget) — tabell på skärmen
-  utan att förstöra dataflödet.
-
 ## Klart
+
+- [x] **ICMP-svepet tappar levande värdar vid hög samtidighet (falska "ARP-only")** _(2026-08-29)_
+
+  Ny `-IcmpThrottle` (default 8, separat från `-Throttle` som styr TCP) och
+  `-IcmpRetries`/`-Count` (default 2). `Invoke-PingSweep` gör om-försök men bara
+  för adresser som ännu inte svarat, så levande värdar kostar en sond. `-Slow`
+  sätter `-IcmpThrottle 1 -IcmpRetries 3`. Verifierat: .12/.20 gick från `ARP` i
+  7/8 körningar till `ICMP+ARP` i 7/8 (och syns alltid minst via ARP).
+
+- [x] **Läs om grann-cachen med kort fördröjning (fånga MAC som ännu var Incomplete)** _(2026-08-29)_
+
+  Ny `-NeighborSettleMs` (default 300; `-Slow` → 500). Efter första
+  `Get-NeighborCache` sover scriptet kort och mergar in poster som hunnit
+  resolva, via ny hjälpfunktion `Merge-NeighborCache` (återanvänds även i
+  TCP-mergen).
+
+- [x] **Visa resultatet som en tabell i slutet** _(2026-08-29)_
+
+  Utdataobjekten fick `PSTypeName = 'NetScan.Host'` och en tabell-formatvy
+  registreras via `Update-FormatData` (ps1xml skrivs bredvid OUI-cachen).
+  Resultatet skrivs som tabell men förblir riktiga objekt — `-CsvPath` och
+  pipeline oförändrade (verifierat: 7 egenskaper kvar, CSV-export OK).
 
 - [x] **Fixa `-Subnet` med CIDR (t.ex. /24) — kastar "Cannot convert value \"-256\" to type System.UInt32"** _(2026-08-29)_
 
