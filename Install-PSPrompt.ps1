@@ -460,7 +460,7 @@ function global:prompt {
     # heuristic: a failed cmdlet after a failed exe reports the exe's code.
     if (-not $ok) {
         $code = if ($exitCode) { $exitCode } else { 1 }
-        $segments.Add((script:Write-PSPromptColor -Text "$($script:PSPromptGlyph.Fail)$code" -Color '203'))
+        $segments.Add((script:Write-PSPromptColor -Text "$($script:PSPromptGlyph.Fail) $code" -Color '203'))
     }
 
     $sigilColor = if ($ok) { '114' } else { '203' }
