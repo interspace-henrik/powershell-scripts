@@ -20,7 +20,9 @@
          a lower-metric tunnel route (e.g. Tailscale) would send the ICMP astray.
          See -SourceAddress / -SkipArpSweep.
       4. Optional TCP connect scan (-Port / -PortSet).
-      5. Reverse DNS + vendor lookup for everything found.
+      5. Names + vendor lookup for everything found: reverse DNS first, then a
+         NetBIOS (UDP 137) and mDNS (UDP 5353) fallback for hosts with no PTR
+         record. See -SkipNameProbe.
 
 .PARAMETER Slow
     Rate-limits the scan so it does not look like a burst sweep to IDS/autoblock
@@ -133,6 +135,14 @@ param(
 
     [ValidateRange(50, 10000)]
     [int]$DnsTimeoutMs = 800,
+
+    # When reverse DNS returns no name, fall back to a NetBIOS node-status query
+    # (UDP 137, catches Windows/SMB/NAS) and an mDNS reverse-PTR query (UDP 5353,
+    # catches Apple/IoT/printers/avahi). Disable with -SkipNameProbe.
+    [switch]$SkipNameProbe,
+
+    [ValidateRange(50, 5000)]
+    [int]$NameProbeTimeoutMs = 500,
 
     [switch]$NoVendorLookup,
 
@@ -430,6 +440,169 @@ function Resolve-HostName {
     }
     catch { }
     return $null
+}
+
+function Read-DnsName {
+    <#
+        Decodes a DNS name at $Offset in $Buffer, following 0xC0 compression
+        pointers, and returns it dotted. $null on a malformed name.
+    #>
+    param([byte[]]$Buffer, [int]$Offset)
+
+    $labels = New-Object System.Collections.Generic.List[string]
+    $i = $Offset
+    $guard = 0
+    while ($i -lt $Buffer.Length -and $Buffer[$i] -ne 0) {
+        if ($guard++ -gt 128) { break }   # cycle guard
+        if (($Buffer[$i] -band 0xC0) -eq 0xC0) {
+            if ($i + 1 -ge $Buffer.Length) { break }
+            $i = (($Buffer[$i] -band 0x3F) -shl 8) -bor $Buffer[$i + 1]
+            continue
+        }
+        $len = $Buffer[$i]
+        if ($i + 1 + $len -gt $Buffer.Length) { break }
+        $labels.Add([System.Text.Encoding]::UTF8.GetString($Buffer, $i + 1, $len))
+        $i += 1 + $len
+    }
+    if ($labels.Count -eq 0) { return $null }
+    return ($labels -join '.')
+}
+
+function Resolve-NetbiosName {
+    <#
+        Sends a NetBIOS node-status (NBSTAT) query to UDP 137 and returns the
+        host's registered unique computer name (<00>/<20>). Catches Windows, SMB
+        and NAS devices that have no reverse-DNS record. $null on no answer.
+    #>
+    param([string]$Address, [int]$TimeoutMs = 500)
+
+    # Question name: the wildcard "*" (0x2A + 15 nulls), first-level encoded as
+    # two nibble-bytes each, length-prefixed and null-terminated.
+    $q = New-Object System.Collections.Generic.List[byte]
+    $q.AddRange([byte[]](0x00,0x00, 0x00,0x00, 0x00,0x01, 0x00,0x00, 0x00,0x00, 0x00,0x00))
+    $q.Add(0x20)
+    $raw = New-Object byte[] 16
+    $raw[0] = 0x2A
+    foreach ($b in $raw) {
+        $q.Add([byte](0x41 + ($b -shr 4)))
+        $q.Add([byte](0x41 + ($b -band 0x0F)))
+    }
+    $q.Add(0x00)
+    $q.AddRange([byte[]](0x00,0x21, 0x00,0x01))   # QTYPE NBSTAT, QCLASS IN
+
+    $resp = $null
+    $udp = New-Object System.Net.Sockets.UdpClient
+    try {
+        $udp.Client.ReceiveTimeout = $TimeoutMs
+        [void]$udp.Send($q.ToArray(), $q.Count, $Address, 137)
+        $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $resp = $udp.Receive([ref]$remote)
+    }
+    catch { return $null }
+    finally { $udp.Close() }
+
+    if (-not $resp -or $resp.Length -lt 12) { return $null }
+
+    # Step past the answer RR: name (pointer or echoed name), then the 10-byte
+    # type/class/ttl/rdlength header, landing on NUM_NAMES.
+    $i = 12
+    if (($resp[$i] -band 0xC0) -eq 0xC0) { $i += 2 }
+    else { while ($i -lt $resp.Length -and $resp[$i] -ne 0) { $i += 1 + $resp[$i] }; $i++ }
+    $i += 10
+    if ($i -ge $resp.Length) { return $null }
+
+    $numNames = $resp[$i]; $i++
+    for ($n = 0; $n -lt $numNames; $n++) {
+        if ($i + 18 -gt $resp.Length) { break }
+        $name    = [System.Text.Encoding]::ASCII.GetString($resp, $i, 15).Trim()
+        $suffix  = $resp[$i + 15]
+        $isGroup = ($resp[$i + 16] -band 0x80) -ne 0
+        if (-not $isGroup -and ($suffix -eq 0x00 -or $suffix -eq 0x20) -and
+            $name -and $name -ne '__MSBROWSE__') {
+            return $name
+        }
+        $i += 18
+    }
+    return $null
+}
+
+function Resolve-MdnsName {
+    <#
+        Sends an mDNS reverse-PTR query (unicast, UDP 5353) and returns the host's
+        advertised name with any trailing .local stripped. Catches Apple, IoT,
+        printers and avahi/Bonjour hosts. $null on no answer.
+    #>
+    param([string]$Address, [int]$TimeoutMs = 500)
+
+    $o = $Address.Split('.')
+    if ($o.Count -ne 4) { return $null }
+    $labels = @($o[3], $o[2], $o[1], $o[0], 'in-addr', 'arpa')
+
+    $q = New-Object System.Collections.Generic.List[byte]
+    $q.AddRange([byte[]](0x00,0x00, 0x00,0x00, 0x00,0x01, 0x00,0x00, 0x00,0x00, 0x00,0x00))
+    foreach ($l in $labels) {
+        $b = [System.Text.Encoding]::ASCII.GetBytes($l)
+        $q.Add([byte]$b.Length); $q.AddRange($b)
+    }
+    $q.Add(0x00)
+    $q.AddRange([byte[]](0x00,0x0C, 0x00,0x01))   # QTYPE PTR, QCLASS IN
+
+    $resp = $null
+    $udp = New-Object System.Net.Sockets.UdpClient
+    try {
+        $udp.Client.ReceiveTimeout = $TimeoutMs
+        [void]$udp.Send($q.ToArray(), $q.Count, $Address, 5353)
+        $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $resp = $udp.Receive([ref]$remote)
+    }
+    catch { return $null }
+    finally { $udp.Close() }
+
+    if (-not $resp -or $resp.Length -lt 12) { return $null }
+    $qd = ($resp[4] -shl 8) -bor $resp[5]
+    $an = ($resp[6] -shl 8) -bor $resp[7]
+    if ($an -lt 1) { return $null }
+
+    # Skip the question section (our own QNAME is uncompressed).
+    $i = 12
+    for ($x = 0; $x -lt $qd; $x++) {
+        while ($i -lt $resp.Length -and $resp[$i] -ne 0) { $i += 1 + $resp[$i] }
+        $i += 5   # null terminator + qtype + qclass
+    }
+
+    # Walk answers, return the first PTR target name.
+    for ($a = 0; $a -lt $an; $a++) {
+        if ($i + 1 -ge $resp.Length) { break }
+        if (($resp[$i] -band 0xC0) -eq 0xC0) { $i += 2 }
+        else { while ($i -lt $resp.Length -and $resp[$i] -ne 0) { $i += 1 + $resp[$i] }; $i++ }
+        if ($i + 10 -gt $resp.Length) { break }
+        $type  = ($resp[$i] -shl 8) -bor $resp[$i + 1]
+        $rdlen = ($resp[$i + 8] -shl 8) -bor $resp[$i + 9]
+        $i += 10
+        if ($type -eq 12) {
+            $name = Read-DnsName -Buffer $resp -Offset $i
+            if ($name) { return ($name -replace '\.local\.?$', '') }
+        }
+        $i += $rdlen
+    }
+    return $null
+}
+
+function Resolve-DeviceName {
+    <#
+        Reverse DNS first; when that is empty and -Probe is set, fall back to
+        NetBIOS then mDNS. Returns the first name found, or $null.
+    #>
+    param([string]$Address, [int]$DnsTimeoutMs, [switch]$Probe, [int]$ProbeTimeoutMs)
+
+    $name = Resolve-HostName -Address $Address -TimeoutMs $DnsTimeoutMs
+    if ($name) { return $name }
+    if ($Probe) {
+        $name = Resolve-NetbiosName -Address $Address -TimeoutMs $ProbeTimeoutMs
+        if ($name) { return $name }
+        $name = Resolve-MdnsName -Address $Address -TimeoutMs $ProbeTimeoutMs
+    }
+    return $name
 }
 
 function Invoke-PingSweep {
@@ -802,7 +975,7 @@ foreach ($address in $discovered) {
         PSTypeName     = 'NetScan.Host'
         IPAddress      = $address
         MACAddress     = $mac
-        HostName       = if ($SkipDns) { $null } else { Resolve-HostName -Address $address -TimeoutMs $DnsTimeoutMs }
+        HostName       = if ($SkipDns) { $null } else { Resolve-DeviceName -Address $address -DnsTimeoutMs $DnsTimeoutMs -Probe:(-not $SkipNameProbe) -ProbeTimeoutMs $NameProbeTimeoutMs }
         Vendor         = Resolve-Vendor -Mac $mac -Table $ouiTable
         OpenPorts      = $openPorts
         Method         = $methods -join '+'

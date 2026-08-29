@@ -2,36 +2,21 @@
 
 ## Att göra
 
-- [ ] **NetScan: namnuppslag utan reverse-DNS (NetBIOS + mDNS-fallback)**
-
-  **Bakgrund:** många LAN-enheter saknar PTR-post, så `Resolve-HostName` (reverse
-  DNS) ger tomt. Testat på `.99.0/24`:
-  - **NetBIOS** (NBNS / `nbtstat -A`): gav `NAS-1` för `.20`. Fångar
-    Windows/SMB/NAS.
-  - **mDNS** (UDP 5353 reverse-PTR): `.20` svarade; går att fånga Apple/IoT/
-    skrivare/Linux-med-avahi och `.local`-namn.
-  - **Proxmox-VM:arna** (`.10/.30/.31/.118`, headless Linux) svarar på *ingetdera*
-    — de annonserar inget namn. Där finns inget protokoll-namn att hämta; OUI/
-    vendor är bästa ledtråden, annars får man namnge via DNS/DHCP-reservationer
-    eller läsa VM-namnen ur Proxmox-API:t (utanför scriptets scope).
-
-  **Förslag:** en fallback-kedja i namnsteget. När PTR är tomt (och `-SkipDns`
-  inte satt), prova i tur och ordning för de PTR-lösa värdarna:
-  1. **NetBIOS node-status** via rå UDP till port 137 (NBSTAT-fråga, `[UdpClient]`),
-     parsa registrerat `<00>`/`<20>` UNIQUE-namn. Rå UDP i stället för `nbtstat.exe`
-     (avvecklas, lokal-beroende utskrift).
-  2. **mDNS reverse-PTR** via UDP 5353 (unicast till värden; parsa svarets
-     PTR-namn, strippa `.local`). OBS: parsern måste hoppa förbi frågesektionen
-     och följa ev. namn-komprimeringspekare (0xC0) — inte bara läsa labels rakt av.
-
-  Parallellisera (runspace-pool likt ARP-svepet), kör bara för värdar utan PTR.
-  Lägg en kolumn/fält som visar *varifrån* namnet kom (DNS/NetBIOS/mDNS), eller
-  återanvänd HostName. Ny switch för att stänga av, t.ex. `-SkipNameProbe`.
-
-  **Test:** `.20` ska få `NAS-1` (NetBIOS) även utan PTR; Proxmox-VM:ar förblir
-  namnlösa (förväntat) men får fortfarande vendor via MAC.
-
 ## Klart
+
+- [x] **NetScan: namnuppslag utan reverse-DNS (NetBIOS + mDNS-fallback)** _(2026-08-29)_
+
+  När reverse-DNS är tomt (och `-SkipDns` inte satt) provar `Resolve-DeviceName`
+  nu i tur och ordning: **NetBIOS node-status** (rå UDP 137, parsar `<00>/<20>`
+  UNIQUE-namn) och **mDNS reverse-PTR** (UDP 5353, parsar PTR-svaret via
+  `Read-DnsName` som följer 0xC0-komprimeringspekare, strippar `.local`). Ny
+  `-SkipNameProbe` och `-NameProbeTimeoutMs` (default 500). Kör inline bara för
+  PTR-lösa värdar (bounded till upptäckta hosts), inte parallelliserat —
+  tillräckligt då sonderna svarar snabbt och tysta värdar är få. HostName
+  återanvänds (ingen extra kolumn). Verifierat: parsern ger `NAS-1` (NetBIOS) och
+  `nas-1` (mDNS, `.local` strippat) för `.20`; Proxmox-VM:ar förblir namnlösa
+  (förväntat — de annonserar inget). Windows egen mDNS-resolver fångar dessutom
+  ofta `.local` redan i reverse-DNS-steget.
 
 - [x] **NetScan: robustare OUI-nedladdning (418 från WAF) + tydlig offline-väg** _(2026-08-29)_
 
