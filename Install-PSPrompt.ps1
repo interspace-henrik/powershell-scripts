@@ -344,12 +344,12 @@ if (-not $script:PSPromptAscii) {
 
 $script:PSPromptGlyph = if ($script:PSPromptAscii) {
     @{ Top = '- '; Bottom = '> '; Sigil = '>'; Sep = ' | '
-       Dirty = '*'; Ahead = '^'; Behind = 'v'; Fail = 'x'; Admin = '!admin'; Ellipsis = '...' }
+       Dirty = '*'; Ahead = '^'; Behind = 'v'; Fail = 'x'; Admin = 'adm'; Ellipsis = '...' }
 } else {
     @{ Top = [char]0x256D + ' '; Bottom = [char]0x2570 + ' '; Sigil = [char]0x276F
        Sep = ' ' + [char]0x00B7 + ' '
        Dirty = [char]0x25CF; Ahead = [char]0x2191; Behind = [char]0x2193
-       Fail = [char]0x2717; Admin = [char]0x26A1 + 'admin'; Ellipsis = [char]0x2026 }
+       Fail = [char]0x2717; Admin = [char]0x26A1; Ellipsis = [char]0x2026 }
 }
 
 # Resolved once at load, not per keystroke.
@@ -469,7 +469,7 @@ function global:prompt {
     $sigil = script:Write-PSPromptColor -Text $script:PSPromptGlyph.Sigil -Color $sigilColor
 
     $sep = script:Write-PSPromptColor -Text $script:PSPromptGlyph.Sep -Color '238'
-    $rule + ($segments -join $sep) + [Environment]::NewLine + $tail + $sigil + ' '
+    [Environment]::NewLine + $rule + ($segments -join $sep) + [Environment]::NewLine + $tail + $sigil + ' '
 }
 
 # PSReadLine is optional and its parameters vary by version, so probe first.
