@@ -2,7 +2,19 @@
 
 ## Att göra
 
-- [ ] **Fixa `-Subnet` med CIDR (t.ex. /24) — kastar "Cannot convert value \"-256\" to type System.UInt32"**
+## Klart
+
+- [x] **Fixa `-Subnet` med CIDR (t.ex. /24) — kastar "Cannot convert value \"-256\" to type System.UInt32"** _(2026-08-29)_
+
+  Bytte `[int64]0xFFFFFFFF` → `0xFFFFFFFFL` på tre ställen i `Invoke-NetScan.ps1`
+  (`Expand-TargetRange` rad 183 + 186, `Test-LocalSubnet` rad 457). Verifierat:
+  /24 → .1–.254, /30 → 2 hosts, /16 → 65534, /32 → 1.
+
+---
+
+<details><summary>Ursprunglig analys</summary>
+
+- **Fixa `-Subnet` med CIDR (t.ex. /24) — kastar "Cannot convert value \"-256\" to type System.UInt32"**
 
   **Orsak:** PowerShell tolkar hex-literalen `0xFFFFFFFF` som `Int32` = `-1`
   (bitmönstret, inte värdet 4294967295). Detta gäller både i PS 5.1 och 7.x.
@@ -23,3 +35,5 @@
 
   **Test efter fix:** `.\Invoke-NetScan.ps1 -Subnet 192.168.10.0/24 -ArpOnly`
   ska inte kasta, och `-StartIP/-EndIP`-läget ska fungera oförändrat.
+
+</details>
