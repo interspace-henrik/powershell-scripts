@@ -5,9 +5,11 @@
     optional TCP probing, reverse DNS and IEEE OUI vendor lookup.
 
 .DESCRIPTION
-    Emits one object per discovered host with IPAddress, MACAddress, HostName,
-    Vendor, Method and ResponseTimeMs. Objects go to the pipeline; -CsvPath
-    additionally writes a CSV file.
+    Produces one object per discovered host with IPAddress, MACAddress, HostName,
+    Vendor, Method and ResponseTimeMs. By default it renders these as a table and
+    prints a summary line (total hosts, how many with a MAC). Use -PassThru to
+    emit the objects to the pipeline instead (for capture/piping); -CsvPath writes
+    a CSV file regardless.
 
     Discovery order:
       1. ICMP sweep (parallel, throttled)
@@ -67,18 +69,20 @@ param(
     [int]$Throttle = 32,
 
     # Concurrency for the ICMP sweep. The .NET async ping drops replies from live
-    # hosts under high concurrency, so this defaults lower than -Throttle. Raise
-    # it for speed at the cost of missed hosts; lower it (or use -Slow) for
-    # reliability.
+    # hosts under high concurrency, so this defaults much lower than -Throttle.
+    # Raise it for speed at the cost of missed hosts; lower it (or use -Slow) for
+    # reliability. 3 was the most reliable default in testing.
     [ValidateRange(1, 512)]
-    [int]$IcmpThrottle = 8,
+    [int]$IcmpThrottle = 3,
 
     # ICMP attempts per host, like ping -n. A host counts as alive on its first
     # reply and only non-responders are retried, so live hosts still cost a single
-    # probe. Compensates for replies lost to async-ping concurrency.
+    # probe. Compensates for replies lost to async-ping concurrency. With the low
+    # default -IcmpThrottle a single pass already resolves reliably; raise it if
+    # hosts intermittently show ARP-only.
     [ValidateRange(1, 10)]
     [Alias('Count')]
-    [int]$IcmpRetries = 2,
+    [int]$IcmpRetries = 1,
 
     # Pause between batches, in milliseconds.
     [ValidateRange(0, 60000)]
@@ -140,7 +144,11 @@ param(
     [string]$CsvPath,
 
     # Use ';' for Swedish Excel locales.
-    [string]$CsvDelimiter = ','
+    [string]$CsvDelimiter = ',',
+
+    # Emit the result objects to the pipeline (for capture/piping) instead of the
+    # default human display - a rendered table followed by a summary line.
+    [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
@@ -826,4 +834,19 @@ if ($CsvPath) {
 }
 
 Write-Verbose "$($sorted.Count) hosts discovered."
-$sorted
+
+$withMac = @($sorted | Where-Object MACAddress).Count
+
+if ($PassThru) {
+    # Machine-readable: objects on the pipeline, no display chrome.
+    $sorted
+}
+else {
+    # Human-readable: render the table, then a summary line. A plain Write-Host
+    # summary would print *before* the table, because object formatting is
+    # deferred to the end of the pipeline - Out-Host forces the table out first.
+    if ($sorted.Count) { $sorted | Out-Host }
+    $summary = "$($sorted.Count) host(s) found"
+    if ($sorted.Count) { $summary += " ($withMac with a MAC address)" }
+    Write-Host $summary -ForegroundColor Cyan
+}
