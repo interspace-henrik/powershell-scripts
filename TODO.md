@@ -2,6 +2,29 @@
 
 ## Att göra
 
+- [ ] **Visa resultatet som en tabell i slutet**
+
+  **Nuläge:** scriptet skickar `[pscustomobject]` med 7 egenskaper till
+  pipelinen (rad ~548 + `$sorted` rad ~567). Eftersom objekten har fler än 4
+  egenskaper renderar PowerShell dem som lista (`Format-List`), inte tabell.
+
+  **Förslag (behåller pipeline-kontraktet):** ge utdataobjekten ett eget
+  typnamn, t.ex. `NetScan.Host` (via `PSTypeName` i `[pscustomobject]`), och
+  registrera en standard-tabellvy med `Update-FormatData` /
+  `Get-FormatData`-stil så att de *visas* som tabell men fortfarande är riktiga
+  objekt (så `-CsvPath` och vidare pipelinehantering fungerar oförändrat).
+  Kolumner: `IPAddress`, `MACAddress`, `HostName`, `Vendor`, `OpenPorts`,
+  `Method`, `ResponseTimeMs`. Definiera kolumnbredder så att långa `HostName`/
+  `Vendor` inte spränger bredden.
+
+  **Enklare alternativ:** avsluta med `$sorted | Format-Table -AutoSize`. Nackdel:
+  bryter "objects go to the pipeline" — `$x = .\Invoke-NetScan.ps1` fångar då
+  formatobjekt, inte data. Går att mildra med en `-AsTable`-switch som bara då
+  kör `Format-Table`.
+
+  **Rekommendation:** typnamn + formatvy (första förslaget) — tabell på skärmen
+  utan att förstöra dataflödet.
+
 ## Klart
 
 - [x] **Fixa `-Subnet` med CIDR (t.ex. /24) — kastar "Cannot convert value \"-256\" to type System.UInt32"** _(2026-08-29)_
