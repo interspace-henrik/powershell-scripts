@@ -2,6 +2,27 @@
 
 ## Att göra
 
+- [ ] **PSPrompt: tomrad före prompten + slimmad admin-indikator**
+
+  Tre justeringar i prompt-mallen (`$promptTemplate`) i `Install-PSPrompt.ps1`:
+
+  1. **Tomrad före varje prompt.** `global:prompt` returnerar idag (rad ~472):
+     `$rule + ($segments -join $sep) + [Environment]::NewLine + $tail + $sigil + ' '`.
+     Lägg en `[Environment]::NewLine` först, så varje prompt får en blankrad över
+     sig (luft mellan kommandon).
+
+  2. **Admin i UTF8 → bara blixten.** Glyf-tabellen (rad ~352) har
+     `Admin = [char]0x26A1 + 'admin'` (⚡admin). Ändra till `Admin = [char]0x26A1`
+     (enbart ⚡). Separatorn ger ändå avstånd till nästa segment.
+
+  3. **Admin i ASCII → `adm`.** ASCII-tabellen (rad ~347) har `Admin = '!admin'`.
+     Ändra till `Admin = 'adm'`.
+
+  **OBS:** ändringarna gäller den genererade `prompt.ps1`, så de slår igenom
+  först efter en ny körning av `Install-PSPrompt.ps1` (samma scope). Ingen
+  `StubVersion`-bump behövs — stubben dot-sourcar bara den delade filen, och en
+  bump skulle lämna kvar gamla v1-stubbar. README behöver ingen ändring.
+
 ## Klart
 
 - [x] **Varna när målsubnätet routas via en tunnel (t.ex. Tailscale) i stället för on-link** _(2026-08-29)_
