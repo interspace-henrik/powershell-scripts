@@ -2,35 +2,23 @@
 
 ## Att göra
 
-- [ ] **Varna när målsubnätet routas via en tunnel (t.ex. Tailscale) i stället för on-link**
-
-  **Bakgrund (diagnosticerat):** när en Tailscale subnet-router annonserar samma
-  subnät som det fysiska LAN:et får tunnel-routen lägre metric (uppmätt: Tailscale
-  ifMetric 5 vs Ethernet 25). Windows skickar då all scan-trafik genom tunneln:
-  ingen lokal ARP → MAC saknas, och detekteringen blir ojämn under last. Symtomet
-  ser ut som ett scriptfel men är routning. `Test-LocalSubnet` fångar det inte,
-  eftersom ett lokalt interface *matchar* subnätet — problemet är att en annan
-  route med bättre metric vinner.
-
-  **Förslag:**
-  1. **Diagnostik + varning:** för målsubnätet, jämför den *valda* routen
-     (`Find-NetRoute -RemoteIPAddress <första target>`) mot on-link Ethernet-routen.
-     Om den valda routen går via ett annat interface (NextHop ≠ 0.0.0.0, eller
-     annat ifIndex än det on-link) — skriv en tydlig `Write-Warning`:
-     "192.168.99.0/24 routas via <interface> (metric X) i stället för on-link
-     <Ethernet> (metric Y); MAC-adresser blir otillgängliga och ICMP kan bli
-     ojämnt. Kör med -SourceAddress, sänk Ethernet-metric, eller
-     `tailscale set --accept-routes=false`."
-  2. **Ev. `-SourceAddress <lokal-IP>`:** binder TCP-sonder till det fysiska
-     interfacet (`TcpClient` stödjer lokal endpoint). OBS: `.NET Ping` kan *inte*
-     käll-bindas, så för att tvinga ICMP på L2 skulle man behöva anropa `ping.exe
-     -S` eller rå ICMP-socket (admin). Utvärdera om det är värt det, eller om
-     enbart varningen räcker.
-
-  **Test:** kör mot .99.0/24 med Tailscale-routen aktiv → varning ska visas.
-  Med `tailscale set --accept-routes=false` → ingen varning, MAC:ar fylls i.
-
 ## Klart
+
+- [x] **Varna när målsubnätet routas via en tunnel (t.ex. Tailscale) i stället för on-link** _(2026-08-29)_
+
+  Ny hjälpfunktion `Get-OffLinkRouteWarning`: hittar det on-link-interface som
+  äger målsubnätet och jämför mot den route Windows faktiskt väljer
+  (`Find-NetRoute`). Går den valda routen via ett annat interface skrivs en
+  `Write-Warning` med interface-namn och metrics samt åtgärdstips
+  (`tailscale set --accept-routes=false` / sänk metric). Verifierat mot
+  .99.0/24 med Tailscale-routen aktiv → varning med "Tailscale (metric 5) instead
+  of ... Ethernet (metric 25)".
+
+  **-SourceAddress: utvärderat och bortvalt.** `.NET Ping` kan inte käll-bindas,
+  så en `-SourceAddress` skulle bara påverka TCP-sonderna medan ICMP (den primära
+  upptäckten) ändå gick via tunneln — halv lösning som vilseleder. Varningen +
+  routnings-åtgärden är rätt väg. Kan tas upp igen om käll-bunden ICMP behövs
+  (kräver `ping.exe -S` eller rå socket/admin).
 
 - [x] **ICMP-svepet tappar levande värdar vid hög samtidighet (falska "ARP-only")** _(2026-08-29)_
 

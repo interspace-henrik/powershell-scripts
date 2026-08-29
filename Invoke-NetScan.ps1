@@ -553,6 +553,56 @@ function Test-LocalSubnet {
     return $false
 }
 
+function Get-OffLinkRouteWarning {
+    <#
+        The target subnet may be directly connected yet still be reached through
+        a different interface, when a lower-metric route (typically a Tailscale or
+        VPN subnet router advertising the same prefix) wins route selection. Scan
+        traffic then leaves through that interface instead of the local L2, so no
+        ARP happens: MAC/vendor data is missing and host detection turns erratic.
+        Returns a warning string when that is the case, otherwise $null.
+    #>
+    param([string]$SampleAddress)
+
+    if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-NetIPInterface -ErrorAction SilentlyContinue)) { return $null }
+
+    # The on-link interface that owns the target subnet, if any.
+    $target   = ConvertTo-UInt32Address ([ipaddress]$SampleAddress)
+    $onLinkIf = $null
+    foreach ($local in Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue) {
+        if ($local.PrefixLength -eq 0 -or $local.PrefixLength -gt 32) { continue }
+        $mask = [uint32](( 0xFFFFFFFFL -shl (32 - $local.PrefixLength)) -band 0xFFFFFFFFL)
+        if (((ConvertTo-UInt32Address ([ipaddress]$local.IPAddress)) -band $mask) -eq ($target -band $mask)) {
+            $onLinkIf = $local.InterfaceIndex
+            break
+        }
+    }
+    if ($null -eq $onLinkIf) { return $null }   # not directly connected; handled by Test-LocalSubnet
+
+    # The route Windows will actually use to reach the target.
+    try {
+        $route = Find-NetRoute -RemoteIPAddress $SampleAddress -ErrorAction Stop |
+                 Where-Object { $_.PSObject.Properties['DestinationPrefix'] } |
+                 Select-Object -First 1
+    }
+    catch { return $null }
+    if (-not $route -or $route.InterfaceIndex -eq $onLinkIf) { return $null }   # on-link path wins - all good
+
+    $selIf = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+    $onIf  = Get-NetIPInterface -InterfaceIndex $onLinkIf              -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+    $selName = if ($selIf) { $selIf.InterfaceAlias } else { "ifIndex $($route.InterfaceIndex)" }
+    $onName  = if ($onIf)  { $onIf.InterfaceAlias }  else { "ifIndex $onLinkIf" }
+    $selMetric = if ($selIf) { " (metric $($selIf.InterfaceMetric))" } else { '' }
+    $onMetric  = if ($onIf)  { " (metric $($onIf.InterfaceMetric))" }  else { '' }
+
+    return "Target subnet is routed via '$selName'$selMetric instead of your on-link '$onName'$onMetric. " +
+           'Scan traffic leaves through that interface, so MAC/vendor data will be missing and host ' +
+           "detection may be erratic. To scan the physical LAN, lower the '$onName' metric or disable the " +
+           "overriding route (e.g. 'tailscale set --accept-routes=false')."
+}
+
 # --- Main --------------------------------------------------------------------
 
 $results = New-Object System.Collections.ArrayList
@@ -573,6 +623,10 @@ else {
 
     if (-not (Test-LocalSubnet -SampleAddress $targets[0])) {
         Write-Warning 'Target range is not on a directly connected interface - MAC addresses and vendor data will be unavailable (ARP is link-local).'
+    }
+    else {
+        $routeWarning = Get-OffLinkRouteWarning -SampleAddress $targets[0]
+        if ($routeWarning) { Write-Warning $routeWarning }
     }
 
     $probeOrder = if ($Shuffle) { $targets | Sort-Object { Get-Random } } else { $targets }
