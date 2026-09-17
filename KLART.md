@@ -2,6 +2,20 @@
 
 Levererade punkter (flyttade hit från TODO.md så att TODO förblir kort).
 
+- [x] **Set-ComputerText: icke-blockerande start + live-uppdatering + stop** _(2026-09-17)_
+
+  Omskriven till launcher + worker. Intern `-Overlay` kör WPF-fönstret (blockerar
+  i egen process); default-läget skriver texten till en per-användar-state-fil
+  (`%LOCALAPPDATA%\ComputerText\state.txt`), startar workern frikopplat och hidden,
+  gör en kort liveness-koll och returnerar **exit 0 vid start / non-zero vid fel**.
+  Workern håller en session-lokal mutex (en overlay i taget) och pollar state-filen
+  var 500 ms: ny `-Text` **uppdaterar texten live utan omstart**, `-Stop` (alias
+  `-Clear`) skriver en stopp-token så workern stänger sig rent. Körs som inloggad
+  användare (SYSTEM→session-relansering medvetet inte byggd nu). STA-guard,
+  kommentarbaserad hjälp och README-rad tillagda; scriptet incheckat.
+  Verifierat: start exit 0 + 1 process; uppdatering exit 0 utan ny process (state
+  bytte HELLO-1→UPDATED-2); stop → 0 processer kvar.
+
 - [x] **NetScan: namnuppslag utan reverse-DNS (NetBIOS + mDNS-fallback)** _(2026-08-29)_
 
   När reverse-DNS är tomt (och `-SkipDns` inte satt) provar `Resolve-DeviceName`
