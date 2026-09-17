@@ -133,24 +133,31 @@ public static class Win32 {
 
     $label = New-Object System.Windows.Controls.TextBlock
     $label.FontFamily = 'Segoe UI'
-    $label.FontSize   = 14
-    $label.FontWeight = 'Normal'
-    $label.Foreground = [System.Windows.Media.Brushes]::White
-    $label.Opacity    = 0.45
+    $label.FontSize   = 16
+    $label.FontWeight = 'Bold'
+    $label.Foreground = [System.Windows.Media.Brushes]::Silver
+    $label.Opacity    = 0.5
 
     # A tiny shadow keeps it readable on light backgrounds.
     $shadow = New-Object System.Windows.Media.Effects.DropShadowEffect
-    $shadow.BlurRadius  = 3
+    $shadow.BlurRadius  = 0.2
     $shadow.ShadowDepth = 1
-    $shadow.Opacity     = 0.6
+    $shadow.Opacity     = 0
     $label.Effect = $shadow
 
     $window.Content = $label
 
     $script:RightMargin  = 18
-    $script:BottomMargin = 12
+    $script:BottomMargin = 27
     $reposition = {
         $window.UpdateLayout()
+        # WPF clamps the *first* SizeToContent pass to the OS minimum window
+        # size (SystemParameters.MinimumWindowWidth/Height, 136x39 by default),
+        # so the window stays far wider and taller than the text and the corner
+        # maths puts the first line up and to the left of every later one.
+        # Toggling SizeToContent forces a fresh pass, which is not clamped.
+        $window.SizeToContent = 'Manual'
+        $window.SizeToContent = 'WidthAndHeight'
         $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $window.Left = $wa.Right  - $window.ActualWidth  - $script:RightMargin
         $window.Top  = $wa.Bottom - $window.ActualHeight - $script:BottomMargin
