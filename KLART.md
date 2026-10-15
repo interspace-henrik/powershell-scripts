@@ -2,6 +2,41 @@
 
 Levererade punkter (flyttade hit från TODO.md så att TODO förblir kort).
 
+- [x] **Copy-ToSharePoint.ps1 — rclone-wrapper: nätverksenhet → SharePoint** _(2026-10-15)_
+
+  Nytt script. Målet anges som en enda `-Url` kopierad från webbläsarens
+  adressfält (library-vy med `?id=`, rak mapp-URL, `RootFolder=` eller
+  `/:f:/r/`-länk; `/:f:/s/`-delningslänkar avvisas med förklaring). Remote-namn =
+  tenanten (delen före `.sharepoint.com`). **Designval:** en remote per tenant
+  (OAuth-token gäller hela tenanten) och biblioteket väljs per körning med
+  `--onedrive-drive-id` — slås upp via Graph genom att matcha drive-`webUrl` mot
+  URL:en (URL-sökväg, inte lokaliserat visningsnamn; klarar subsiter) och cachas i
+  `drives.json`. rclone laddas ned pinnad (v1.75.2) med SHA-256-kontroll mot
+  SHA256SUMS; `-UpdateRclone` för senaste. Kopierar med `rclone copy` (`-Mirror` →
+  `sync`, bekräftelse eller `-Force`), robocopy-flaggor (/XF /XD /R /W /MT /L /LOG
+  /NFL /IPG), PowerShell-progressbar + fil-rader + summeringstabell byggda på
+  rclones JSON-logg, eller `-NativeProgress`. För dokumentbibliotek jämförs på
+  modtime (`--ignore-size --ignore-checksum`, SharePoint skriver om Office-filer);
+  `-StrictCompare` stänger av. `-SourceCredential` via WNetAddConnection2 (inget
+  lösenord på kommandoraden), `-SignIn` förnyar utgången inloggning, `-ClientId`/
+  `-ClientSecret` för tenanter som blockerar rclone-appen, `-DriveId` som nödutgång,
+  `-PassThru`. Exit-kod = rclones.
+
+  **Verifierat:** URL-parsning (12 fall), argument-quoting genom rclones egen
+  parser (token-JSON med `\"` och `\\` bevaras exakt), nedladdning + checksumma,
+  token-hjälpare (Go-nanosekunder, base64-inslagen output), Graph-cache utan
+  anrop, och motorn lokal→lokal i sex scenarion (ny, oförändrad, ändrad,
+  torrkörning, mirror med borttagning, låst fil → 1 FAILED trots retries, exit 1).
+  End-to-end mot fejkad tenant-remote: header, felorsak + åtgärdstips, loggfil,
+  `-WhatIf`, `-Mirror` utan `-Force` i icke-interaktiv session ger tydligt fel.
+  **Ej verifierat (kräver riktig tenant):** själva webbläsarinloggningen,
+  Graph-uppslaget mot ett riktigt bibliotek och uppladdning till SharePoint.
+
+  **Fixat på vägen:** rclone loggar dödliga fel som `level: critical`, som först
+  filtrerades bort (användaren såg bara "exit 1"); nu visas de. Och en `#Requires`
+  direkt ovanför hjälpblocket gjorde att `Get-Help` ignorerade all hjälp — rättat
+  här och i `Invoke-NetScan.ps1` (separat commit).
+
 - [x] **Set-ComputerText: icke-blockerande start + live-uppdatering + stop** _(2026-09-17)_
 
   Omskriven till launcher + worker. Intern `-Overlay` kör WPF-fönstret (blockerar
