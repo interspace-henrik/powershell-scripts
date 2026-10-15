@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Discovers hosts on a subnet or IP range using ICMP, the ARP/neighbor cache,
