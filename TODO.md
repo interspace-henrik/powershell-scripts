@@ -32,17 +32,17 @@
   5. **Körläge:** troligen interaktivt. Oövervakad körning (Ninja/schemalagt) kräver
      app-registrering — se beslut A.
 
-  **Beslut som behövs (styr designen):**
-  - **A. Auth:** interaktiv OAuth (enkelt, kräver människa en gång) *eller* Azure
-    AD-appregistrering (client id/secret, oövervakad körning)? Ska det kunna köras
-    oövervakat?
-  - **B. "Mappa upp":** riktig enhetsbokstav (`rclone mount` + WinFSP) att robocopa
-    in i, *eller* räcker `rclone copy` direkt mot remoten? (Rekommendation: copy.)
-  - **C. copy vs mirror default:** ska dest-filer som saknas i källan raderas
-    (mirror) eller behållas (copy, default)?
-  - **D. Källans credentials:** är nätverksenheten redan åtkomlig (inloggad/mappad),
-    eller ska wrappern köra `net use` med angivna uppgifter?
-  - **E. rclone-version:** pinna en version (reproducerbart) eller alltid senaste?
+  **Beslut:**
+  - **A. Auth:** ✅ interaktiv OAuth (rclone öppnar webbläsaren en gång, token
+    cachas). Oövervakad körning via app-registrering sparas till senare om det behövs.
+  - **B. Uppmappning:** ✅ `rclone copy` direkt mot remoten — ingen monterad enhet/
+    WinFSP. robocopy-känslan via flaggor/UX.
+  - **C. copy vs mirror:** copy (icke-förstörande) som default; `-Mirror` som opt-in
+    med varning + `-WhatIf`-rekommendation (sync raderar extra på dest).
+  - **D. Källans credentials:** anta åtkomlig; valfri `-SourceCredential` som kör
+    `net use` vid behov.
+  - **E. rclone-version:** pinna känd-fungerande version; `-UpdateRclone`-switch för
+    senaste.
 
   **Repo-krav:** kommentarbaserad hjälp (`.SYNOPSIS`/`.DESCRIPTION`/exempel), rad i
   `README.md`.
