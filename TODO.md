@@ -17,6 +17,12 @@
      (Microsoft Graph/OAuth, modern auth) — inte legacy WebDAV/"sharepoint". Första
      körningen konfigurerar remoten (site-URL + bibliotek) och kör OAuth en gång;
      token cachas i `rclone.conf`.
+     **Tenant-agnostiskt:** inget hårdkodat per tenant. Parametrar: `-SiteUrl`
+     (`https://<tenant>.sharepoint.com/sites/<site>`), `-Library` (t.ex. "Documents"/
+     "Delade dokument"), valfri `-TargetPath` (undermapp i biblioteket), och
+     `-RemoteName`/`-ConfigPath` så flera tenants kan ha var sin cachad remote/token
+     sida vid sida. Finns remoten redan konfigurerad återanvänds den; annars körs
+     OAuth-setup för just den.
   3. **Kopiering:** `rclone copy` (eller `rclone sync` med `-Mirror`) från källa →
      bibliotek. Robocopy → rclone-mappning:
      - `/MIR` → `-Mirror` (`sync`, **raderar extra på dest** — var försiktig)
