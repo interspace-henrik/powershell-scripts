@@ -752,7 +752,7 @@ function Resolve-SharePointDrive {
         catch {
             switch (Get-HttpStatus $_) {
                 { $_ -in 400, 404 } { continue }
-                401 { throw 'Microsoft Graph rejected the sign-in (401). Run again to sign in anew, or delete the remote from the config file.' }
+                401 { throw 'Microsoft Graph rejected the sign-in (401). Run again with -SignIn to sign in anew.' }
                 403 { throw "Access denied (403) to site '$sitePath'. The signed-in account needs access to it - or the tenant blocks the rclone app; then use -ClientId/-ClientSecret." }
                 default { throw }
             }
@@ -1087,16 +1087,20 @@ try {
         $fresh = Invoke-RcloneAuthorize -Exe $rclone -ClientId $ClientId -ClientSecret $ClientSecret
         $null  = Invoke-Rclone -Exe $rclone -Arguments @('config', 'update', $remote, 'token', $fresh, '--non-interactive', '--config', $ConfigPath)
     }
+    # Plain script blocks, deliberately not .GetNewClosure(): a closure is bound
+    # to a new dynamic module that cannot see this script's functions when the
+    # script is started as .\Copy-ToSharePoint.ps1 (it works under -File, which
+    # hid the bug). Main runs at script scope, so the variables resolve anyway.
     if ($section) {
         $getToken = {
             Get-GraphAccessToken -Exe $rclone -ConfigPath $ConfigPath -Remote $remote -ClientId $ClientId -ClientSecret $ClientSecret
-        }.GetNewClosure()
+        }
     }
     else {
         Write-Host "No saved sign-in for tenant '$($target.Tenant)' - opening the browser for a Microsoft 365 sign-in..." -ForegroundColor Cyan
         $tokenJson   = Invoke-RcloneAuthorize -Exe $rclone -ClientId $ClientId -ClientSecret $ClientSecret
         $accessToken = ($tokenJson | ConvertFrom-Json).access_token
-        $getToken    = { $accessToken }.GetNewClosure()
+        $getToken    = { $accessToken }
     }
 
     $drive = if ($DriveId) {

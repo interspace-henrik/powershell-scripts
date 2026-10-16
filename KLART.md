@@ -2,6 +2,16 @@
 
 Levererade punkter (flyttade hit från TODO.md så att TODO förblir kort).
 
+- [x] **Copy-ToSharePoint: krasch "Get-GraphAccessToken is not recognized"** _(2026-10-16)_
+
+  Uppstod när tenantens remote redan fanns och biblioteket inte låg i cachen, och
+  scriptet startades som `.\Copy-ToSharePoint.ps1`. Token-scriptblocket skapades
+  med `.GetNewClosure()`, som binder det till en ny dynamisk modul som inte ser
+  scriptets egna funktioner. Under `pwsh -File`, som alla tidigare end-to-end-tester
+  använde, syns de ändå, så buggen doldes. Fix: vanliga scriptblock. Verifierat i
+  både pwsh 7 och Windows PowerShell 5.1, anropat som `.\script`: vägen når nu
+  Microsoft Graph. 401-meddelandet pekar också på `-SignIn`.
+
 - [x] **Copy-ToSharePoint: skiftlägesokänsliga filter + standardexkludering av skräpfiler** _(2026-10-16)_
 
   Bugg: rclones `--exclude` var skiftlägeskänsligt, så `-ExcludeFile thumbs.db`
