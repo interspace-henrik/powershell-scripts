@@ -83,11 +83,18 @@
     Skip the -Mirror confirmation (needed for unattended runs).
 
 .PARAMETER ExcludeFile
-    File names or wildcards to skip at any depth, like robocopy /XF.
+    File names or wildcards to skip at any depth, like robocopy /XF. Matching
+    ignores case, as on Windows.
 
 .PARAMETER ExcludeDir
     Folder names to skip at any depth, like robocopy /XD. A full path below
-    -Source excludes just that one folder.
+    -Source excludes just that one folder. Matching ignores case.
+
+.PARAMETER NoDefaultExcludes
+    Also copy the Windows and Office clutter that is skipped by default:
+    Thumbs.db, ehthumbs.db, desktop.ini, .DS_Store, Office lock files (~$*),
+    and the $RECYCLE.BIN and System Volume Information folders. The OneDrive
+    client and Explorer leave these out too.
 
 .PARAMETER Retries
     How many times rclone retries the whole job when files failed (robocopy /R).
@@ -193,6 +200,8 @@ param(
 
     [string[]] $ExcludeDir,
 
+    [switch] $NoDefaultExcludes,
+
     [ValidateRange(1, 100)]
     [int] $Retries = 3,
 
@@ -239,6 +248,12 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $script:PinnedRcloneVersion = 'v1.75.2'
+
+# Explorer/Office clutter that has no use in SharePoint; the OneDrive client
+# skips these as well. The two folders only exist at a drive root, where
+# reading them fails with "access denied".
+$script:DefaultExcludeFiles = 'Thumbs.db', 'ehthumbs.db', 'desktop.ini', '.DS_Store', '~$*'
+$script:DefaultExcludeDirs  = '$RECYCLE.BIN', 'System Volume Information'
 $script:LogWriter           = $null
 $script:SuppressFileList    = [bool]$NoFileList
 
@@ -1113,6 +1128,8 @@ try {
         '--transfers', [string]$Transfers,
         '--checkers', [string]$Checkers,
         '--create-empty-src-dirs',
+        # rclone filters are case-sensitive; robocopy /XF /XD and Windows are not.
+        '--ignore-case',
         # Microsoft throttles SharePoint traffic that identifies itself less hard.
         '--user-agent', "ISV|rclone.org|rclone/$rcloneVersion"))
     $compare = 'size, modtime, checksum'
@@ -1121,7 +1138,10 @@ try {
         $compare = 'modtime (SharePoint rewrites Office files; -StrictCompare to change)'
     }
     if ($BandwidthLimit) { $rcArgs.AddRange([string[]]@('--bwlimit', $BandwidthLimit)) }
-    $rcArgs.AddRange([string[]]@(Get-RcloneFilterArgs -ExcludeFile $ExcludeFile -ExcludeDir $ExcludeDir -SourceRoot $sourceFull))
+    $defaultFiles = if ($NoDefaultExcludes) { @() } else { $script:DefaultExcludeFiles }
+    $defaultDirs  = if ($NoDefaultExcludes) { @() } else { $script:DefaultExcludeDirs }
+    $rcArgs.AddRange([string[]]@(Get-RcloneFilterArgs -ExcludeFile (@($ExcludeFile) + $defaultFiles) `
+                                                      -ExcludeDir  (@($ExcludeDir) + $defaultDirs) -SourceRoot $sourceFull))
     if ($dryRun) { $rcArgs.Add('--dry-run') }
 
     $logPath = if ($LogFile) { $PSCmdlet.GetUnresolvedProviderPathFromPSPath($LogFile) } else { $null }
@@ -1167,6 +1187,10 @@ try {
         Write-Report ('{0,10} : retries {1} (wait {2}s), transfers {3}, checkers {4}' -f 'Options', $Retries, $RetryWaitSeconds, $Transfers, $Checkers)
         Write-Report ('{0,10} : {1}' -f 'Compare', $compare)
         if ($excluded.Count) { Write-Report ('{0,10} : {1}' -f 'Exclude', ($excluded -join ', ')) }
+        if (-not $NoDefaultExcludes) {
+            $defaults = @($defaultFiles) + @($defaultDirs | ForEach-Object { "$_\" })
+            Write-Report ('{0,10} : {1}   (-NoDefaultExcludes copies them)' -f 'Defaults', ($defaults -join ', '))
+        }
         if ($BandwidthLimit) { Write-Report ('{0,10} : {1}/s' -f 'Bandwidth', $BandwidthLimit) }
         if ($dryRun) { Write-Report ('{0,10} : {1}' -f 'Mode', 'DRY RUN (-WhatIf) - nothing is changed') -Color Yellow }
         if ($Mirror) { Write-Report ('{0,10} : {1}' -f 'Mirror', 'files missing in the source are deleted in the destination') -Color Yellow }

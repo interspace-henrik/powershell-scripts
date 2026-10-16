@@ -2,6 +2,19 @@
 
 Levererade punkter (flyttade hit från TODO.md så att TODO förblir kort).
 
+- [x] **Copy-ToSharePoint: skiftlägesokänsliga filter + standardexkludering av skräpfiler** _(2026-10-16)_
+
+  Bugg: rclones `--exclude` var skiftlägeskänsligt, så `-ExcludeFile thumbs.db`
+  missade `Thumbs.db`. Nu skickas alltid `--ignore-case` (som robocopy/Windows).
+  Nytt: `Thumbs.db`, `ehthumbs.db`, `desktop.ini`, `.DS_Store`, `~$*` samt mapparna
+  `$RECYCLE.BIN` och `System Volume Information` hoppas över som standard och
+  visas på headerns `Defaults`-rad; `-NoDefaultExcludes` tar med dem. Beslut:
+  `*.tmp` hålls utanför standardlistan (kan vara riktig data); städning av redan
+  uppladdat skräp (`--delete-excluded`) skjuts upp. Verifierat i motorn: av tio
+  filer kopierades bara de tre väntade (`THUMBS.DB` i versaler, `Thumbs.db` i
+  undermapp och `Node_Modules` via `node_modules` stoppades), och båda
+  systemmapparna hoppades över utan fel.
+
 - [x] **Copy-ToSharePoint.ps1 — rclone-wrapper: nätverksenhet → SharePoint** _(2026-10-15)_
 
   Nytt script. Målet anges som en enda `-Url` kopierad från webbläsarens
